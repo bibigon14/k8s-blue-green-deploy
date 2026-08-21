@@ -33,12 +33,15 @@ func main() {
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(statusResponse{
+		if err := json.NewEncoder(w).Encode(statusResponse{
 			Version: version,
 			Color:   color,
 			Host:    hostname,
 			TimeUTC: time.Now().UTC().Format(time.RFC3339),
-		})
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	})
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {

@@ -15,7 +15,7 @@ func TestRootEndpoint(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(statusResponse{
+		_ = json.NewEncoder(w).Encode(statusResponse{
 			Version: "test",
 			Color:   "blue",
 			Host:    "test-host",
