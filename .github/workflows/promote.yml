@@ -1,0 +1,36 @@
+name: Promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Type "promote" to confirm promotion of preview to active'
+        required: true
+        default: ''
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    if: inputs.confirmation == 'promote'
+    steps:
+      - name: Fail if confirmation missing
+        if: inputs.confirmation != 'promote'
+        run: |
+          echo "Refusing to run: 'confirmation' input must be exactly 'promote'."
+          exit 1
+
+      - name: Install kubectl-argo-rollouts
+        run: |
+          curl -sLO https://github.com/argoproj/argo-rollouts/releases/latest/download/kubectl-argo-rollouts-linux-amd64
+          chmod +x kubectl-argo-rollouts-linux-amd64
+          sudo mv kubectl-argo-rollouts-linux-amd64 /usr/local/bin/kubectl-argo-rollouts
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG }}" | base64 -d > ~/.kube/config
+
+      - name: Promote rollout
+        run: |
+          kubectl argo rollouts promote demo-app -n blue-green-demo
+          kubectl argo rollouts status demo-app -n blue-green-demo --timeout=120s

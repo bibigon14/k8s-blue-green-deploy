@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-app-active
+  namespace: blue-green-demo
+  labels:
+    app: demo-app
+    role: active
+spec:
+  type: ClusterIP
+  selector:
+    app: demo-app
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-app-preview
+  namespace: blue-green-demo
+  labels:
+    app: demo-app
+    role: preview
+spec:
+  type: ClusterIP
+  selector:
+    app: demo-app
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP

@@ -1,0 +1,60 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: demo-app
+  namespace: blue-green-demo
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: demo-app
+  template:
+    metadata:
+      labels:
+        app: demo-app
+    spec:
+      containers:
+        - name: demo-app
+          image: ghcr.io/bibigon14/k8s-blue-green-deploy:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: DEPLOY_COLOR
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['rollouts-pod-template-hash']
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+  strategy:
+    blueGreen:
+      # Service routing production traffic
+      activeService: demo-app-active
+      # Service routing preview (new version) traffic for testing
+      previewService: demo-app-preview
+      # Auto-promote after analysis succeeds (no manual approval needed for demo)
+      autoPromotionEnabled: true
+      # Run smoke test before promotion
+      prePromotionAnalysis:
+        templates:
+          - templateName: smoke-test
+      # Keep old ReplicaSet scaled down (not deleted) for fast rollback
+      scaleDownDelaySeconds: 30

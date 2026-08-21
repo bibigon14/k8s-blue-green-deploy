@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: smoke-test
+  namespace: blue-green-demo
+spec:
+  metrics:
+    - name: preview-health
+      # Run 3 checks, 10 seconds apart
+      count: 3
+      interval: 10s
+      # Success if all 3 return HTTP 200
+      successCondition: result == "200"
+      failureLimit: 0
+      provider:
+        web:
+          url: http://demo-app-preview.blue-green-demo.svc.cluster.local/healthz
+          jsonPath: "{$.statusCode}"
+          method: GET
+          timeoutSeconds: 5

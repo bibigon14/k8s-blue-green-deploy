@@ -1,0 +1,14 @@
+# Go
+app/server
+app/coverage.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# macOS
+.DS_Store
+
+# Docker
+.docker/

@@ -1,0 +1,33 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: demo-app-active
+  namespace: blue-green-demo
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`demo.homelab.local`)
+      kind: Rule
+      services:
+        - name: demo-app-active
+          port: 80
+  tls:
+    secretName: wildcard-homelab-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: demo-app-preview
+  namespace: blue-green-demo
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`demo-preview.homelab.local`)
+      kind: Rule
+      services:
+        - name: demo-app-preview
+          port: 80
+  tls:
+    secretName: wildcard-homelab-tls
