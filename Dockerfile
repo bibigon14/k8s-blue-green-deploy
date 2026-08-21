@@ -10,7 +10,8 @@ COPY app/go.mod ./
 RUN go mod download
 
 COPY app/ ./
-RUN CGO_ENABLED=0 GOOS=linux \
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
     go build -ldflags="-s -w -X main.version=${VERSION}" -o /server .
 
 # Stage 2: runtime
