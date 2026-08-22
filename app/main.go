@@ -46,16 +46,16 @@ func main() {
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, "ok")
+		_, _ = fmt.Fprintln(w, "ok")
 	})
 
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		if atomic.LoadInt32(&ready) == 1 {
 			w.WriteHeader(http.StatusOK)
-			fmt.Fprintln(w, "ready")
+			_, _ = fmt.Fprintln(w, "ready")
 		} else {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			fmt.Fprintln(w, "not ready")
+			_, _ = fmt.Fprintln(w, "not ready")
 		}
 	})
 
