@@ -8,10 +8,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var (
@@ -27,14 +32,54 @@ type statusResponse struct {
 	TimeUTC string `json:"time_utc"`
 }
 
+var (
+	httpRequestsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "http_requests_total",
+			Help: "Total HTTP requests, labelled by method, path, and status.",
+		},
+		[]string{"method", "path", "status"},
+	)
+
+	httpRequestDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "http_request_duration_seconds",
+			Help:    "HTTP request latency in seconds.",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"method", "path"},
+	)
+
+	httpRequestsInFlight = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "http_requests_in_flight",
+			Help: "Number of HTTP requests currently being served.",
+		},
+	)
+
+	appReady = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "app_ready",
+			Help: "1 if the app is ready to serve traffic, 0 otherwise.",
+		},
+	)
+
+	appInfo = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "app_info",
+			Help: "Static app metadata. Always 1; version and color are labels.",
+		},
+		[]string{"version", "color"},
+	)
+)
+
 func main() {
-	// JSON structured logging to stdout. Version + color become persistent
-	// attributes on every line — makes it trivial to filter one deploy's
-	// logs out of a mixed blue/green stream in Loki/Grafana.
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: parseLogLevel(os.Getenv("LOG_LEVEL")),
 	})).With("version", version, "color", color)
 	slog.SetDefault(logger)
+
+	appInfo.WithLabelValues(version, color).Set(1)
 
 	hostname, _ := os.Hostname()
 
@@ -68,22 +113,23 @@ func main() {
 		}
 	})
 
+	mux.Handle("/metrics", promhttp.Handler())
+
 	srv := &http.Server{
 		Addr:         ":8080",
-		Handler:      logRequests(logger, mux),
+		Handler:      instrumentedHandler(logger, mux),
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
 
-	// Graceful startup: mark ready after server is listening
 	go func() {
 		time.Sleep(2 * time.Second)
 		atomic.StoreInt32(&ready, 1)
+		appReady.Set(1)
 		logger.Info("ready")
 	}()
 
-	// Graceful shutdown: drain connections on SIGTERM
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
@@ -91,7 +137,8 @@ func main() {
 		logger.Info("received signal, starting graceful shutdown", "signal", sig.String())
 
 		atomic.StoreInt32(&ready, 0)
-		time.Sleep(5 * time.Second) // let readiness probe fail, stop routing traffic
+		appReady.Set(0)
+		time.Sleep(5 * time.Second)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -108,31 +155,40 @@ func main() {
 	logger.Info("server stopped")
 }
 
-// logRequests wraps h so every HTTP request emits one structured log line
-// with method, path, status, duration, response size, and client IP.
-// Skips liveness/readiness probes — kubelet hits them every couple of
-// seconds and they'd drown out anything useful.
-func logRequests(logger *slog.Logger, h http.Handler) http.Handler {
+func instrumentedHandler(logger *slog.Logger, h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" || r.URL.Path == "/ready" {
+		if r.URL.Path == "/healthz" || r.URL.Path == "/ready" || r.URL.Path == "/metrics" {
 			h.ServeHTTP(w, r)
 			return
 		}
+
+		httpRequestsInFlight.Inc()
+		defer httpRequestsInFlight.Dec()
+
 		start := time.Now()
 		rec := &responseRecorder{ResponseWriter: w, status: http.StatusOK}
 		h.ServeHTTP(rec, r)
+		elapsed := time.Since(start)
+
+		labels := prometheus.Labels{"method": r.Method, "path": r.URL.Path}
+		httpRequestsTotal.With(prometheus.Labels{
+			"method": r.Method,
+			"path":   r.URL.Path,
+			"status": strconv.Itoa(rec.status),
+		}).Inc()
+		httpRequestDuration.With(labels).Observe(elapsed.Seconds())
+
 		logger.Info("request",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", rec.status,
-			"duration_ms", time.Since(start).Milliseconds(),
+			"duration_ms", elapsed.Milliseconds(),
 			"bytes", rec.bytes,
 			"remote", clientIP(r),
 		)
 	})
 }
 
-// responseRecorder captures status code and bytes written for the logger.
 type responseRecorder struct {
 	http.ResponseWriter
 	status int
@@ -150,8 +206,6 @@ func (r *responseRecorder) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// clientIP prefers the first entry in X-Forwarded-For (Traefik sets it),
-// falls back to the socket peer address.
 func clientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		if i := strings.IndexByte(xff, ','); i > 0 {
@@ -162,8 +216,6 @@ func clientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-// parseLogLevel maps a string env var to slog.Level. Empty or unknown
-// values fall through to Info, so a typo doesn't silence the process.
 func parseLogLevel(s string) slog.Level {
 	switch strings.ToLower(s) {
 	case "debug":

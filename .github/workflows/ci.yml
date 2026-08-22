@@ -22,7 +22,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: 'app/go.mod'
-          cache: false
+          cache-dependency-path: 'app/go.sum'
 
       - name: Lint
         uses: golangci/golangci-lint-action@v9
