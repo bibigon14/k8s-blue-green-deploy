@@ -12,3 +12,8 @@ app/coverage.out
 
 # Docker
 .docker/
+*.bak
+
+# Compiled Go binaries
+/app/k8s-blue-green-deploy
+*.bak
