@@ -1,0 +1,17 @@
+# Dependabot: keeps GitHub Actions versions up to date.
+# Opens weekly PRs when a newer major/minor is available.
+# Groups all docker/* actions into one PR so review is a single diff.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      docker-actions:
+        patterns:
+          - "docker/*"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
