@@ -1,5 +1,6 @@
 # Go
 app/server
+app/k8s-blue-green-deploy
 app/coverage.out
 
 # IDE
@@ -12,8 +13,8 @@ app/coverage.out
 
 # Docker
 .docker/
-*.bak
 
-# Compiled Go binaries
-/app/k8s-blue-green-deploy
+# sed / patch backup files
 *.bak
+*.orig
+*.rej
