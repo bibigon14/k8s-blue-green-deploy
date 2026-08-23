@@ -31,3 +31,26 @@ spec:
     - port: 80
       targetPort: 8080
       protocol: TCP
+---
+# Prometheus scrape endpoint. Standalone Prometheus on the Pi runs from
+# systemd (not in-cluster), so pod annotations don't help — it needs a
+# stable localhost:30xxx target. This Service exposes ALL demo-app pods
+# (both blue and green during a rollout) so the dashboard can slice
+# metrics by the `color` label = ReplicaSet hash.
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-app-metrics
+  namespace: blue-green-demo
+  labels:
+    app: demo-app
+    role: metrics
+spec:
+  type: NodePort
+  selector:
+    app: demo-app
+  ports:
+    - port: 8080
+      targetPort: 8080
+      nodePort: 30130
+      protocol: TCP
