@@ -162,6 +162,9 @@ func instrumentedHandler(logger *slog.Logger, h http.Handler) http.Handler {
 			return
 		}
 
+		w.Header().Set("X-Version", version)
+		w.Header().Set("X-Color", color)
+
 		httpRequestsInFlight.Inc()
 		defer httpRequestsInFlight.Dec()
 
