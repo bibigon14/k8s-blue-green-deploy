@@ -1,0 +1,59 @@
+[Unit]
+Description=Traffic generator for k8s-blue-green-deploy demo
+Documentation=https://github.com/bibigon14/k8s-blue-green-deploy
+After=network-online.target wg-quick@wg0.service
+# Wants (not Requires) - if the tunnel drops, we still run and report
+# transport_error via metrics, which is itself a useful signal.
+Wants=network-online.target wg-quick@wg0.service
+
+[Service]
+Type=simple
+# The binary talks HTTP over an existing tunnel; no privileged operations.
+DynamicUser=yes
+ExecStart=/usr/local/bin/traffic-gen \
+    -target=http://10.0.0.1:30130 \
+    -rps=3 \
+    -slow-prob=0.10 \
+    -error-prob=0.05 \
+    -max-slow-ms=800 \
+    -modulation-period-min=30 \
+    -modulation-amplitude=0.4 \
+    -metrics-listen=10.0.0.4:9102 \
+    -timeout=10s
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Sandboxing: this is a pure HTTP client, so drop everything that is not
+# strictly required to open outbound TCP sockets and serve /metrics on the
+# WireGuard interface.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Resource ceilings so a misconfigured RPS cannot exhaust the VM.
+LimitNOFILE=1024
+MemoryMax=64M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

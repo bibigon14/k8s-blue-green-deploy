@@ -16,27 +16,34 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each module has its own go.mod; lint and test them in parallel.
+        # The demo app is what ships as a container; traffic-gen is the
+        # long-lived load client that keeps the dashboard populated.
+        module: [app, traffic-gen]
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
         with:
-          go-version-file: 'app/go.mod'
-          cache-dependency-path: 'app/go.sum'
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.sum
 
       - name: Lint
         uses: golangci/golangci-lint-action@v9
         with:
-          working-directory: app
+          working-directory: ${{ matrix.module }}
 
       - name: Test
         run: |
-          cd app
+          cd ${{ matrix.module }}
           go test -v -race -coverprofile=coverage.out ./...
 
       - name: Coverage summary
         run: |
-          cd app
+          cd ${{ matrix.module }}
           go tool cover -func=coverage.out | tail -1
 
   build-and-push:
@@ -81,3 +88,37 @@ jobs:
           build-args: VERSION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  traffic-gen-binary:
+    # Build the traffic-gen binary for arm64 and publish it as a workflow
+    # artifact so the VM install can grab it without cloning the repo.
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: traffic-gen/go.mod
+          cache-dependency-path: traffic-gen/go.sum
+
+      - name: Cross-compile linux/arm64
+        run: |
+          cd traffic-gen
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
+            go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_SHA::8}" \
+            -o ../bin/traffic-gen-linux-arm64 .
+
+      - name: Cross-compile linux/amd64
+        run: |
+          cd traffic-gen
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+            go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_SHA::8}" \
+            -o ../bin/traffic-gen-linux-amd64 .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: traffic-gen-binaries
+          path: bin/traffic-gen-linux-*
+          retention-days: 30

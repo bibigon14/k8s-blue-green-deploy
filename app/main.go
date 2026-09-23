@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -25,6 +26,10 @@ var (
 	ready   int32
 )
 
+// maxSlowMs caps /slow?ms=N to protect against pathological input in a
+// portfolio deployment where the endpoint is exposed via a NodePort.
+const maxSlowMs = 5000
+
 type statusResponse struct {
 	Version string `json:"version"`
 	Color   string `json:"color"`
@@ -36,7 +41,7 @@ var (
 	httpRequestsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "http_requests_total",
-			Help: "Total HTTP requests, labelled by method, path, and status.",
+			Help: "Total HTTP requests, labelled by method, route pattern, and status.",
 		},
 		[]string{"method", "path", "status"},
 	)
@@ -44,7 +49,7 @@ var (
 	httpRequestDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "http_request_duration_seconds",
-			Help:    "HTTP request latency in seconds.",
+			Help:    "HTTP request latency in seconds, labelled by method and route pattern.",
 			Buckets: prometheus.DefBuckets,
 		},
 		[]string{"method", "path"},
@@ -73,6 +78,95 @@ var (
 	)
 )
 
+// newMux builds the application router. It is a package-level constructor so
+// tests can exercise the real handlers instead of duplicating them.
+//
+// Route patterns use Go 1.22+ syntax so that method and exact-match ("/{$}")
+// participate in dispatch. Every route pattern is a fixed string, so the
+// method/path label pair used in metrics has bounded cardinality.
+func newMux(hostname string) *http.ServeMux {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(statusResponse{
+			Version: version,
+			Color:   color,
+			Host:    hostname,
+			TimeUTC: time.Now().UTC().Format(time.RFC3339),
+		})
+	})
+
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintln(w, "ok")
+	})
+
+	mux.HandleFunc("GET /ready", func(w http.ResponseWriter, r *http.Request) {
+		if atomic.LoadInt32(&ready) == 1 {
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintln(w, "ready")
+		} else {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = fmt.Fprintln(w, "not ready")
+		}
+	})
+
+	// /slow sleeps for a caller-controlled duration before returning 200.
+	// Populates the p50/p95/p99 histogram with a visible tail.
+	// Accepts ?ms=N (clamped to [0, maxSlowMs]) or ?jitter to sleep for a
+	// uniformly random duration in [0, ms]. Default is 250ms with no jitter.
+	mux.HandleFunc("GET /slow", func(w http.ResponseWriter, r *http.Request) {
+		ms := 250
+		if v := r.URL.Query().Get("ms"); v != "" {
+			if parsed, err := strconv.Atoi(v); err == nil {
+				ms = parsed
+			}
+		}
+		if ms < 0 {
+			ms = 0
+		}
+		if ms > maxSlowMs {
+			ms = maxSlowMs
+		}
+		sleep := time.Duration(ms) * time.Millisecond
+		if r.URL.Query().Has("jitter") && sleep > 0 {
+			// #nosec G404 - not a security-sensitive use.
+			sleep = time.Duration(rand.Int63n(int64(sleep) + 1))
+		}
+		time.Sleep(sleep)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"slept_ms": sleep.Milliseconds(),
+		})
+	})
+
+	// /fail returns a caller-controlled status code so the non-2xx panel
+	// gets a controllable mix of 4xx and 5xx. Accepts ?code=N in [400, 599].
+	// Default is 500.
+	mux.HandleFunc("GET /fail", func(w http.ResponseWriter, r *http.Request) {
+		code := http.StatusInternalServerError
+		if v := r.URL.Query().Get("code"); v != "" {
+			if parsed, err := strconv.Atoi(v); err == nil && parsed >= 400 && parsed <= 599 {
+				code = parsed
+			}
+		}
+		http.Error(w, http.StatusText(code), code)
+	})
+
+	mux.Handle("GET /metrics", promhttp.Handler())
+
+	// Catch-all: any path or method that did not match above yields 404.
+	// The pattern label in metrics will read "/" for these, distinct from
+	// the exact-match "/{$}" root, so unknown-path noise stays visible in
+	// the non-2xx breakdown without inflating cardinality.
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
+
+	return mux
+}
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: parseLogLevel(os.Getenv("LOG_LEVEL")),
@@ -83,43 +177,11 @@ func main() {
 
 	hostname, _ := os.Hostname()
 
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(statusResponse{
-			Version: version,
-			Color:   color,
-			Host:    hostname,
-			TimeUTC: time.Now().UTC().Format(time.RFC3339),
-		}); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	})
-
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprintln(w, "ok")
-	})
-
-	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
-		if atomic.LoadInt32(&ready) == 1 {
-			w.WriteHeader(http.StatusOK)
-			_, _ = fmt.Fprintln(w, "ready")
-		} else {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = fmt.Fprintln(w, "not ready")
-		}
-	})
-
-	mux.Handle("/metrics", promhttp.Handler())
-
 	srv := &http.Server{
 		Addr:         ":8080",
-		Handler:      instrumentedHandler(logger, mux),
+		Handler:      instrumentedHandler(logger, newMux(hostname)),
 		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		WriteTimeout: 30 * time.Second, // must exceed maxSlowMs
 		IdleTimeout:  120 * time.Second,
 	}
 
@@ -157,6 +219,9 @@ func main() {
 
 func instrumentedHandler(logger *slog.Logger, h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// /healthz, /ready, /metrics are intentionally excluded from the
+		// RED metrics so kubelet probes and Prometheus scrapes do not
+		// distort request rate and latency.
 		if r.URL.Path == "/healthz" || r.URL.Path == "/ready" || r.URL.Path == "/metrics" {
 			h.ServeHTTP(w, r)
 			return
@@ -173,10 +238,17 @@ func instrumentedHandler(logger *slog.Logger, h http.Handler) http.Handler {
 		h.ServeHTTP(rec, r)
 		elapsed := time.Since(start)
 
-		labels := prometheus.Labels{"method": r.Method, "path": r.URL.Path}
+		// Use the mux route pattern (populated by Go 1.22+ ServeMux during
+		// dispatch) as the "path" label instead of the raw URL, so metric
+		// cardinality is bounded by the number of registered routes.
+		route := r.Pattern
+		if route == "" {
+			route = "unmatched"
+		}
+		labels := prometheus.Labels{"method": r.Method, "path": route}
 		httpRequestsTotal.With(prometheus.Labels{
 			"method": r.Method,
-			"path":   r.URL.Path,
+			"path":   route,
 			"status": strconv.Itoa(rec.status),
 		}).Inc()
 		httpRequestDuration.With(labels).Observe(elapsed.Seconds())
@@ -184,6 +256,7 @@ func instrumentedHandler(logger *slog.Logger, h http.Handler) http.Handler {
 		logger.Info("request",
 			"method", r.Method,
 			"path", r.URL.Path,
+			"route", route,
 			"status", rec.status,
 			"duration_ms", elapsed.Milliseconds(),
 			"bytes", rec.bytes,
