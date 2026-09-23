@@ -62,12 +62,18 @@ func TestRoot_UnknownPathIs404(t *testing.T) {
 	}
 }
 
-func TestRoot_MethodNotAllowed(t *testing.T) {
-	// The exact-match "GET /{$}" pattern should reject non-GET methods; the
-	// go 1.22+ ServeMux answers with 405 in that case.
-	rec := serve(t, http.MethodPost, "/")
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("expected 405 for POST /, got %d", rec.Code)
+func TestRoot_NonGETMethodIs404(t *testing.T) {
+	// The exact-match "GET /{$}" pattern only accepts GET, but the "/"
+	// catch-all has no method restriction, so it wins the fallback for
+	// POST / and similar. That yields 404 rather than 405; the important
+	// invariant is that non-GET on / does NOT return the status JSON.
+	for _, m := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch} {
+		t.Run(m, func(t *testing.T) {
+			rec := serve(t, m, "/")
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("expected 404 for %s /, got %d", m, rec.Code)
+			}
+		})
 	}
 }
 
