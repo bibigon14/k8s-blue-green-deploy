@@ -117,7 +117,7 @@ jobs:
             go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_SHA::8}" \
             -o ../bin/traffic-gen-linux-amd64 .
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: traffic-gen-binaries
           path: bin/traffic-gen-linux-*
